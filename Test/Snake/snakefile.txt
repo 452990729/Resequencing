@@ -1,0 +1,142 @@
+Samples = "SRR6765722_A SRR6765721_A".split()
+adapter1 = "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"
+adapter2 = "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
+FASTA = "/home/lixuefei/Pipeline/Resequencing/Database/Neisseria_gonorrhoeae/FA1090.fa"
+REGION = "/home/lixuefei/Pipeline/Resequencing/Database/Neisseria_gonorrhoeae/FA1090.fa.bed"
+rule All:
+	input:
+		"4.Mutation/All.raw.filter.vcf"
+
+rule QC:
+	input:
+		"RawData/{sample}.fq.gz"
+	output:
+		"1.QC/{sample}.clean.fq.gz"
+	log:
+		e = "logs/{sample}.qc.e", o = "logs/{sample}.qc.o"
+	shell:
+		"/home/lixuefei/Pipeline/Resequencing/Software/fastp -i RawData/{wildcards.sample}.fq.gz -o 1.QC/{wildcards.sample}.clean.fq.gz --adapter_sequence {adapter1} -A -j 1.QC/{wildcards.sample}_QC_report.json -h 1.QC/{wildcards.sample}_QC_report.html"
+
+rule Align:
+	input:
+		"1.QC/{sample}.clean.fq.gz"
+	output:
+		"2.Align/{sample}.bam"
+	params:
+		rg="@RG\\tID:{sample}\\tPL:illumina\\tSM:{sample}"
+	log:
+		e = "logs/{sample}.align.e", o = "logs/{sample}.align.o"
+	threads: 5
+	shell:
+		"/home/lixuefei/Pipeline/Resequencing/Software/bwa mem -t 5 -M -R '{params.rg}' {FASTA} 1.QC/{wildcards.sample}.clean.fq.gz |/home/lixuefei/Pipeline/Resequencing/Software/samtools view -Sb -@ 4 -T {FASTA} -o {output}"
+
+rule Sort:
+	input:
+		"2.Align/{sample}.bam"
+	output:
+		"2.Align/{sample}.sort.bam"
+	log:
+		e = "logs/{sample}.sort.e", o = "logs/{sample}.sort.o"
+	shell:
+		"/home/lixuefei/Pipeline/Resequencing/Software/gatk SortSam --INPUT {input} --OUTPUT {output} --SORT_ORDER coordinate"
+
+rule MarkDup:
+	input:
+		"2.Align/{sample}.sort.bam"
+	output:
+		"2.Align/{sample}.sort.dedup.bam"
+	log:
+		e = "logs/{sample}.redup.e", o = "logs/{sample}.redup.o"
+	shell:
+		"/home/lixuefei/Pipeline/Resequencing/Software/gatk MarkDuplicates --INPUT {input} --OUTPUT {output} --METRICS_FILE 2.Align/{wildcards.sample}.metrics --MAX_FILE_HANDLES_FOR_READ_ENDS_MAP 1000"
+
+rule BamIndex:
+	input:
+		"2.Align/{sample}.sort.dedup.bam"
+	output:
+		"2.Align/{sample}.sort.dedup.bam.bai"
+	log:
+		e = "logs/{sample}.BamIndex.e", o = "logs/{sample}.BamIndex.o"
+	shell:
+		"/home/lixuefei/Pipeline/Resequencing/Software/samtools index {input}"
+
+rule HaplotypeCaller:
+	input:
+		"2.Align/{sample}.sort.dedup.bam"
+	output:
+		"3.Call/{sample}.gvcf"
+	log:
+		e = "logs/{sample}.HaplotypeCaller.e", o = "logs/{sample}.HaplotypeCaller.o"
+	shell:
+		"/home/lixuefei/Pipeline/Resequencing/Software/gatk HaplotypeCaller -R {FASTA} --emit-ref-confidence GVCF -I {input} -L {REGION} -O {output}"
+
+rule CombineGVCFs:
+	input:
+		expand("3.Call/{sample}.gvcf", sample=Samples)
+	output:
+		"3.Call/All.gvcf"
+	log:
+		e = "logs/CombineGVCFs.e", o = "logs/CombineGVCFs.o"
+	shell:
+		"/home/lixuefei/Pipeline/Resequencing/Software/gatk CombineGVCFs -R {FASTA} -V 3.Call/SRR6765722_A.gvcf -V 3.Call/SRR6765721_A.gvcf -O {output}"
+
+rule GenotypeGVCFs:
+	input:
+		"3.Call/All.gvcf"
+	output:
+		"3.Call/All.raw.gvcf"
+	log:
+		e = "logs/GenotypeGVCFs.e", o = "logs/GenotypeGVCFs.o"
+	shell:
+		"/home/lixuefei/Pipeline/Resequencing/Software/gatk GenotypeGVCFs -R {FASTA} -V {input} -O {output} -L {REGION}"
+
+rule SelectSNP:
+	input:
+		"3.Call/All.raw.gvcf"
+	output:
+		"4.Mutation/All.raw.snp.vcf"
+	log:
+		e = "logs/SelectSNP.e", o = "logs/SelectSNP.o"
+	shell:
+		"/home/lixuefei/Pipeline/Resequencing/Software/gatk SelectVariants -select-type SNP -V {input} -O {output}"
+
+rule SelectIndel:
+	input:
+		"3.Call/All.raw.gvcf"
+	output:
+		"4.Mutation/All.raw.indel.vcf"
+	log:
+		e = "logs/SelectIndel.e", o = "logs/SelectIndel.o"
+	shell:
+		"/home/lixuefei/Pipeline/Resequencing/Software/gatk SelectVariants -select-type INDEL -V {input} -O {output}"
+
+rule FilterSNP:
+	input:
+		"4.Mutation/All.raw.snp.vcf"
+	output:
+		"4.Mutation/All.raw.snp.filter.vcf"
+	log:
+		e = "logs/FilterSNP.e", o = "logs/FilterSNP.o"
+	shell:
+		'/home/lixuefei/Pipeline/Resequencing/Software/gatk VariantFiltration -V {input} --filter-expression "QD < 2.0 || MQ < 40.0 || FS > 60.0 || SOR > 3.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0" --filter-name "Filter" -O {output}'
+
+rule FilterIndel:
+	input:
+		"4.Mutation/All.raw.indel.vcf"
+	output:
+		"4.Mutation/All.raw.indel.filter.vcf"
+	log:
+		e = "logs/FilterIndel.e", o = "logs/FilterIndel.o"
+	shell:
+		'/home/lixuefei/Pipeline/Resequencing/Software/gatk VariantFiltration -V {input} --filter-expression "QD < 2.0 || FS > 200.0 || SOR > 10.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0" --filter-name "Filter" -O {output}'
+
+rule MergeVcfs:
+	input:
+		indel="4.Mutation/All.raw.indel.filter.vcf",snp="4.Mutation/All.raw.snp.filter.vcf"
+	output:
+		"4.Mutation/All.raw.filter.vcf"
+	log:
+		e = "logs/MergeVcfs.e", o = "logs/MergeVcfs.o"
+	shell:
+		"/home/lixuefei/Pipeline/Resequencing/Software/gatk MergeVcfs -I {input.snp} -I {input.indel} -O {output}"
+
