@@ -99,7 +99,7 @@ def Argparse():
 
 def HandleRawdata(argv):
     outpath = argv['o']
-    RawData = os.path.join(outpath, 'RawData')
+    RawData = os.path.join(outpath, '0.RawData')
     list_ob = []
     if not os.path.exists(RawData):
         os.mkdir(RawData)
@@ -115,7 +115,7 @@ def HandleRawdata(argv):
                 if ob.paired:
                     Paired = True
                     if ob.fq1.endswith('.gz'):
-                        lb = '.fq.gz'
+                        lb = '.fastq.gz'
                     else:
                         lb = '.fastq'
                     os.system('ln -s {} {}'.format(ob.fq1, ob.Name+'_1'+lb))
@@ -123,15 +123,16 @@ def HandleRawdata(argv):
                 else:
                     Paired = False
                     if ob.fq.endswith('.gz'):
-                        lb = '.fq.gz'
+                        lb = '.fastq.gz'
                     else:
                         lb = '.fastq'
                     os.system('ln -s {} {}'.format(ob.fq, ob.Name+lb))
     os.chdir(outpath)
-    return list_ob, Paired
+    return list_ob, Paired, lb
 
-def WriteSnake(argv, list_ob, Paired):
+def WriteSnake(argv, list_ob, Paired, lb):
     DB = config.get('DATABASE', argv['p'])
+    outpath = argv['o']
     label = os.path.basename(glob(DB+'/*.fa')[0]).rstrip('.fa')
     snakefile = open(os.path.join(argv['o'], 'snakefile.txt'), 'w')
     ### config file
@@ -149,33 +150,33 @@ def WriteSnake(argv, list_ob, Paired):
     ###QC
     QC = Snake('QC')
     if Paired:
-        QC.UpdateInput('"RawData/{sample}_1.fq.gz"')
-        QC.UpdateOutput('"1.QC/{sample}_1.clean.fq.gz"')
+        QC.UpdateInput('A = "'+outpath+'/0.RawData/{sample}_1'+lb+'", B = "'+outpath+'/0.RawData/{sample}_2'+lb+'"')
+        QC.UpdateOutput('A = "'+outpath+'/1.QC/{sample}_1.clean.fastq.gz", B = "'+outpath+'/1.QC/{sample}_2.clean.fastq.gz"')
         QC.UpdateLog('e = "logs/{sample}.qc.e", o = "logs/{sample}.qc.o"')
-        QC.UpdateShell(r'"'+FASTP+r' -i RawData/{wildcards.sample}_1.fq.gz -o 1.QC/{wildcards.sample}_1.clean.fq.gz -I RawData/{wildcards.sample}_2.fq.gz -O 1.QC/{wildcards.sample}_2.clean.fq.gz --adapter_sequence {adapter1} --adapter_sequence_r2 {adapter2} -A -j 1.QC/{wildcards.sample}_QC_report.json -h 1.QC/{wildcards.sample}_QC_report.html"')
+        QC.UpdateShell(r'"'+FASTP+r' -i {input.A} -o {output.A} -I {input.B} -O {output.B} --adapter_sequence {adapter1} --adapter_sequence_r2 {adapter2} -w {threads} -j '+outpath+'/1.QC/{wildcards.sample}_QC_report.json -h '+outpath+'/1.QC/{wildcards.sample}_QC_report.html 1>{log.o} 2>{log.e}"')
     else:
-        QC.UpdateInput('"RawData/{sample}.fq.gz"')
-        QC.UpdateOutput('"1.QC/{sample}.clean.fq.gz"')
+        QC.UpdateInput('"'+outpath+'/0.RawData/{sample}'+lb+'"')
+        QC.UpdateOutput('"'+outpath+'/1.QC/{sample}.clean.fastq.gz"')
         QC.UpdateLog('e = "logs/{sample}.qc.e", o = "logs/{sample}.qc.o"')
-        QC.UpdateShell(r'"'+FASTP+r' -i RawData/{wildcards.sample}.fq.gz -o 1.QC/{wildcards.sample}.clean.fq.gz --adapter_sequence {adapter1} -A -j 1.QC/{wildcards.sample}_QC_report.json -h 1.QC/{wildcards.sample}_QC_report.html"')
+        QC.UpdateShell(r'"'+FASTP+r' -i {input} -o {output}  --adapter_sequence {adapter1} -w {threads} -j '+outpath+'/1.QC/{wildcards.sample}_QC_report.json -h '+outpath+'/1.QC/{wildcards.sample}_QC_report.html"')
     QC.WriteStr(snakefile)
 
     ### Align
     Align = Snake('Align')
     if Paired:
-        Align.UpdateInput('"1.QC/{sample}_1.clean.fq.gz"')
+        Align.UpdateInput('A = "'+outpath+'/1.QC/{sample}_1.clean.fastq.gz", B = "'+outpath+'/1.QC/{sample}_2.clean.fastq.gz"')
         Align.UpdateOutput('"2.Align/{sample}.bam"')
         Align.UpdateThreads('5')
         Align.UpdateLog('e = "logs/{sample}.align.e", o = "logs/{sample}.align.o"')
         Align.UpdateParams('rg="@RG\\\\tID:{sample}\\\\tPL:illumina\\\\tSM:{sample}"')
-        Align.UpdateShell(r'"'+BWA+r" mem -t 5 -M -R '{params.rg}' {FASTA} 1.QC/{wildcards.sample}_1.clean.fq.gz 1.QC/{wildcards.sample}_2.clean.fq.gz |"+SAMTOOLS+r' view -Sb -@ 4 -T {FASTA} -o {output}"')
+        Align.UpdateShell(r'"'+BWA+r" mem -t 5 -M -R '{params.rg}' {FASTA} {input.A} {input.B} |"+SAMTOOLS+r' view -Sb -@ 4 -T {FASTA} -o {output}"')
     else:
-        Align.UpdateInput('"1.QC/{sample}.clean.fq.gz"')
+        Align.UpdateInput('"'+outpath+'/1.QC/{sample}.clean.fastq.gz"')
         Align.UpdateOutput('"2.Align/{sample}.bam"')
         Align.UpdateThreads('5')
         Align.UpdateLog('e = "logs/{sample}.align.e", o = "logs/{sample}.align.o"')
         Align.UpdateParams('rg="@RG\\\\tID:{sample}\\\\tPL:illumina\\\\tSM:{sample}"')
-        Align.UpdateShell(r'"'+BWA+r" mem -t 5 -M -R '{params.rg}' {FASTA} 1.QC/{wildcards.sample}.clean.fq.gz |"+SAMTOOLS+r' view -Sb -@ 4 -T {FASTA} -o {output}"')
+        Align.UpdateShell(r'"'+BWA+r" mem -t 5 -M -R '{params.rg}' {FASTA} {input} |"+SAMTOOLS+r' view -Sb -@ 4 -T {FASTA} -o {output}"')
     Align.WriteStr(snakefile)
 
     ### Sort
@@ -306,8 +307,8 @@ def RunShell(argv):
 
 def main():
     argv = Argparse()
-    list_ob, Paired = HandleRawdata(argv)
-    WriteSnake(argv, list_ob, Paired)
+    list_ob, Paired, lb = HandleRawdata(argv)
+    WriteSnake(argv, list_ob, Paired, lb)
     RunShell(argv)
 
 
